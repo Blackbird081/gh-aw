@@ -3,40 +3,47 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+type apiProxySteeringLog struct {
+	path        string
+	eventCounts map[string]int
+	entries     []proxyEventsEntry
+}
+
 func applyGatewaySteeringSummary(summary *TokenUsageSummary, runDir string) {
 	if summary == nil {
 		return
 	}
-	eventsPath := findAPIProxyEventsFile(runDir)
-	if eventsPath == "" {
-		return
-	}
-	eventCounts, err := parseAPIProxySteeringEventCounts(eventsPath)
+	log, err := findAPIProxyEventsLog(runDir)
 	if err != nil {
 		tokenUsageLog.Printf("Failed to parse API proxy steering events in %s: %v", runDir, err)
 		return
 	}
-	summary.SteeringEventCounts = eventCounts
+	if log == nil {
+		return
+	}
+	summary.SteeringEventCounts = log.eventCounts
 	summary.TotalSteeringEvents = 0
-	for _, count := range eventCounts {
+	for _, count := range log.eventCounts {
 		summary.TotalSteeringEvents += count
 	}
 }
 
-func parseAPIProxySteeringEventCounts(filePath string) (map[string]int, error) {
+func parseAPIProxySteeringLog(filePath string) (*apiProxySteeringLog, error) {
 	file, err := os.Open(filepath.Clean(filePath))
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	counts := make(map[string]int)
+	log := &apiProxySteeringLog{
+		path:        filePath,
+		eventCounts: make(map[string]int),
+	}
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, maxScannerBufferSize)
 	scanner.Buffer(buf, maxScannerBufferSize)
@@ -50,57 +57,29 @@ func parseAPIProxySteeringEventCounts(filePath string) (map[string]int, error) {
 			continue
 		}
 		eventName := entry.eventName()
-		if eventName == "steering" || strings.HasSuffix(eventName, "_steering") {
-			counts[eventName]++
+		if isSteeringEventName(eventName) {
+			log.eventCounts[eventName]++
+		}
+		if isSteeringEvent(eventName, strings.TrimSpace(entry.Message)) {
+			log.entries = append(log.entries, entry)
 		}
 	}
-	return counts, scanner.Err()
-}
-
-// scanSteeringEntries reads all valid steering proxyEventsEntry records from r.
-// Lines that fail the quick-keyword check or JSON decoding are silently skipped.
-// The caller is responsible for the lifetime of r.
-func scanSteeringEntries(r io.Reader) ([]proxyEventsEntry, error) {
-	var entries []proxyEventsEntry
-	scanner := bufio.NewScanner(r)
-	buf := make([]byte, maxScannerBufferSize)
-	scanner.Buffer(buf, maxScannerBufferSize)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !containsSteeringKeyword(line) {
-			continue
-		}
-		var entry proxyEventsEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		if isSteeringEvent(entry.eventName(), strings.TrimSpace(entry.Message)) {
-			entries = append(entries, entry)
-		}
-	}
-	return entries, scanner.Err()
-}
-
-func parseAPIProxySteeringEvents(filePath string) ([]GatewaySteeringEvent, error) {
-	file, err := os.Open(filepath.Clean(filePath))
-	if err != nil {
+	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	entries, err := scanSteeringEntries(file)
-	if err != nil {
-		return nil, err
-	}
-	return gatewaySteeringEventsFromEntries(entries), nil
+	return log, nil
 }
 
 func extractGatewaySteeringEvents(runDir string) ([]GatewaySteeringEvent, error) {
-	eventsPath := findAPIProxyEventsFile(runDir)
-	if eventsPath == "" {
+	log, err := findAPIProxyEventsLog(runDir)
+	if err != nil || log == nil {
+		return nil, err
+	}
+	if len(log.entries) == 0 {
 		return nil, nil
 	}
 
-	return parseAPIProxySteeringEvents(eventsPath)
+	return gatewaySteeringEventsFromEntries(log.entries), nil
 }
 
 func gatewaySteeringEventsFromEntries(entries []proxyEventsEntry) []GatewaySteeringEvent {
@@ -124,6 +103,9 @@ func containsSteeringKeyword(line string) bool {
 // isSteeringEvent matches AWF proxy steering events using both event name and
 // message format from the firewall specification.
 func isSteeringEvent(eventName, message string) bool {
+	if !isSteeringEventName(eventName) {
+		return false
+	}
 	switch eventName {
 	case tokenSteeringEventName:
 		return strings.HasPrefix(message, awfTokenWarningPrefix)
@@ -132,6 +114,10 @@ func isSteeringEvent(eventName, message string) bool {
 	default:
 		return false
 	}
+}
+
+func isSteeringEventName(eventName string) bool {
+	return eventName == "steering" || strings.HasSuffix(eventName, "_steering")
 }
 
 // eventName returns the normalised event name from whichever field is populated.

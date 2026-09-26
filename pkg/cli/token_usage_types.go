@@ -126,10 +126,10 @@ type agentUsageEntry struct {
 }
 
 // proxyEventsEntry is a JSONL record from api-proxy-logs/events.jsonl.
-// The event name appears under one of four field names depending on the proxy version;
-// the message field is present on steering events.
+// The event name appears under one of four top-level field names or nested payload
+// fields depending on the proxy version; the message field is present on steering events.
 type proxyEventsEntry struct {
-	// Event name appears under one of these four keys; all are checked.
+	// Event name appears under one of these four keys or in the nested payload.
 	Event          string          `json:"event"`
 	Type           string          `json:"type"`
 	EventNameSnake string          `json:"event_name"`

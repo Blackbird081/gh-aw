@@ -27,6 +27,7 @@ type usageActivitySummary struct {
 	SafeOutputs *usageActivitySafeOutputs `json:"safe_outputs,omitempty"`
 	Experiments *usageActivityExperiments `json:"experiments,omitempty"`
 	WorkingSet  *WorkingSetMetrics        `json:"working_set,omitempty"`
+	Friction    *FrictionCostSummary      `json:"friction,omitempty"`
 }
 
 // WorkingSetMetrics describes cumulative model-input traffic relative to the
@@ -166,12 +167,24 @@ func loadUsageActivitySummary(runDir string) (*usageActivitySummary, error) {
 }
 
 func applyUsageActivitySummaryToResult(summary *usageActivitySummary, result *DownloadResult, allowTurnBackfill bool) {
-	if summary == nil || result == nil {
+	if result == nil {
+		return
+	}
+	if summary == nil {
+		if result.Friction == nil {
+			result.Friction = deriveFrictionFallback(result.MCPToolUsage, nil)
+		}
 		return
 	}
 
 	if summary.WorkingSet != nil {
 		result.WorkingSet = summary.WorkingSet
+	}
+
+	// Friction is precomputed in the conclusion job: prefer it verbatim and never
+	// recompute it from raw logs when the section is present.
+	if summary.Friction != nil {
+		result.Friction = summary.Friction
 	}
 
 	// Preserve previously parsed turn counts (from full session artifacts/events.jsonl)
@@ -182,6 +195,9 @@ func applyUsageActivitySummaryToResult(summary *usageActivitySummary, result *Do
 
 	applyUsageActivityFirewallSummary(summary.Firewall, result)
 	applyUsageActivityMCPSummary(summary.Gateway, summary.Integrity, result)
+	if result.Friction == nil {
+		result.Friction = deriveFrictionFallback(result.MCPToolUsage, summary.Session)
+	}
 	applyUsageActivitySteeringSummary(summary.Steering, &result.TokenUsage)
 
 	// Backfill safe output item count from usage summary when the safe-outputs-items
@@ -205,9 +221,9 @@ func applyUsageActivitySteeringSummary(steering *usageActivitySteering, tokenUsa
 	}
 	if (*tokenUsage).TotalSteeringEvents == 0 {
 		(*tokenUsage).TotalSteeringEvents = steering.TotalEvents
-		if len(steering.EventCounts) > 0 {
-			(*tokenUsage).SteeringEventCounts = maps.Clone(steering.EventCounts)
-		}
+	}
+	if len((*tokenUsage).SteeringEventCounts) == 0 && len(steering.EventCounts) > 0 {
+		(*tokenUsage).SteeringEventCounts = maps.Clone(steering.EventCounts)
 	}
 }
 
@@ -292,19 +308,20 @@ func backfillUsageActivityMCPMetrics(gateway *usageActivityGateway, integritySum
 		for _, tool := range gateway.Tools {
 			activityTools[tool.ServerName+":"+tool.ToolName] = tool
 		}
-		usage.Summary = sliceutil.Map(usage.Summary, func(tool MCPToolSummary) MCPToolSummary {
+		for index := range usage.Summary {
+			tool := &usage.Summary[index]
 			tool.syncFieldsFromBase()
 			if activity, ok := activityTools[tool.ServerName+":"+tool.ToolName]; ok {
-				backfillUsageActivityToolMetrics(&tool, activity)
+				backfillUsageActivityToolMetrics(tool, activity)
 			}
-			return tool
-		})
+		}
 
 		activityServers := make(map[string]usageActivityGatewayServer, len(gateway.Servers))
 		for _, server := range gateway.Servers {
 			activityServers[server.ServerName] = server
 		}
-		usage.Servers = sliceutil.Map(usage.Servers, func(server MCPServerStats) MCPServerStats {
+		for index := range usage.Servers {
+			server := &usage.Servers[index]
 			if activity, ok := activityServers[server.ServerName]; ok {
 				if server.TotalInputSize == 0 {
 					server.TotalInputSize = activity.TotalInputSize
@@ -316,8 +333,7 @@ func backfillUsageActivityMCPMetrics(gateway *usageActivityGateway, integritySum
 					server.AvgDuration = formatActivityDuration(activity.AvgDurationMS)
 				}
 			}
-			return server
-		})
+		}
 	}
 	if usage.Integrity == nil && len(usage.FilteredEvents) == 0 && integritySummary != nil {
 		usage.Integrity = cloneIntegrityFilterSummary(integritySummary)

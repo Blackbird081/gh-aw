@@ -43,7 +43,7 @@ describe("steering_helpers", () => {
     });
   });
 
-  describe("countSteeringEventsInApiProxyJsonl", () => {
+  describe("countSteeringEventsByTypeInApiProxyJsonl", () => {
     it("aggregates counters for each normalized steering event", () => {
       const content = ['{"event":"TOKEN_STEERING"}', '{"type":"token_steering"}', '{"event_name":"timeout_steering"}', '{"eventName":"model_steering"}'].join("\n");
       expect(countSteeringEventsByTypeInApiProxyJsonl(content)).toEqual({
@@ -52,7 +52,9 @@ describe("steering_helpers", () => {
         token_steering: 2,
       });
     });
+  });
 
+  describe("countSteeringEventsInApiProxyJsonl", () => {
     it("counts events with exact 'steering' name", () => {
       const content = '{"event":"steering","request_id":"r1"}\n';
       expect(countSteeringEventsInApiProxyJsonl(content)).toBe(1);

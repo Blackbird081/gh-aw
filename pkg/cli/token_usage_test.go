@@ -457,7 +457,26 @@ func TestFindTokenUsageFile(t *testing.T) {
 	})
 }
 
-func TestFindAPIProxyEventsFile(t *testing.T) {
+func TestFindAPIProxyEventsLog(t *testing.T) {
+	t.Run("recovers from invalid cached value", func(t *testing.T) {
+		tmpDir := testutil.TempDir(t, "find-api-proxy-invalid-cache")
+		cacheKey := filepath.Clean(tmpDir)
+		apiProxySteeringLogCache.Store(cacheKey, "invalid")
+		t.Cleanup(func() {
+			apiProxySteeringLogCache.Delete(cacheKey)
+		})
+		logsDir := filepath.Join(tmpDir, "sandbox", "firewall", "logs", "api-proxy-logs")
+		require.NoError(t, os.MkdirAll(logsDir, 0o755))
+		eventsFile := filepath.Join(logsDir, "events.jsonl")
+		require.NoError(t, os.WriteFile(eventsFile, []byte(`{"event":"token_steering"}`+"\n"), 0o644))
+
+		result, err := findAPIProxyEventsLog(tmpDir)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, eventsFile, result.path)
+	})
+
 	t.Run("finds in sandbox/firewall/audit path", func(t *testing.T) {
 		tmpDir := testutil.TempDir(t, "find-api-proxy-events")
 		auditDir := filepath.Join(tmpDir, "sandbox", "firewall", "audit", "api-proxy-logs")
@@ -465,8 +484,10 @@ func TestFindAPIProxyEventsFile(t *testing.T) {
 		eventsFile := filepath.Join(auditDir, "events.jsonl")
 		require.NoError(t, os.WriteFile(eventsFile, []byte(`{"event":"token_steering"}`+"\n"), 0o644))
 
-		result := findAPIProxyEventsFile(tmpDir)
-		assert.Equal(t, eventsFile, result, "should find file in AWF audit path")
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, eventsFile, result.path, "should find file in AWF audit path")
 	})
 
 	t.Run("finds event-logs filename", func(t *testing.T) {
@@ -476,7 +497,10 @@ func TestFindAPIProxyEventsFile(t *testing.T) {
 		eventsFile := filepath.Join(logsDir, "event-logs.jsonl")
 		require.NoError(t, os.WriteFile(eventsFile, []byte(`{"event":"model_steering"}`+"\n"), 0o644))
 
-		assert.Equal(t, eventsFile, findAPIProxyEventsFile(tmpDir))
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, eventsFile, result.path)
 	})
 
 	t.Run("prefers sandbox/firewall/logs over sandbox/firewall/audit when both exist", func(t *testing.T) {
@@ -490,8 +514,10 @@ func TestFindAPIProxyEventsFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(logsFile, []byte(`{"event":"token_steering"}`+"\n"), 0o644))
 		require.NoError(t, os.WriteFile(auditFile, []byte(`{"event":"timeout_steering"}`+"\n"), 0o644))
 
-		result := findAPIProxyEventsFile(tmpDir)
-		assert.Equal(t, logsFile, result, "should prefer primary logs path over AWF audit path")
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, logsFile, result.path, "should prefer primary logs path over AWF audit path")
 	})
 
 	t.Run("skips empty and steering-free event logs across layouts", func(t *testing.T) {
@@ -505,7 +531,10 @@ func TestFindAPIProxyEventsFile(t *testing.T) {
 		auditFile := filepath.Join(auditDir, "events.jsonl")
 		require.NoError(t, os.WriteFile(auditFile, []byte(`{"event":"token_steering"}`+"\n"), 0o644))
 
-		assert.Equal(t, auditFile, findAPIProxyEventsFile(tmpDir))
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, auditFile, result.path)
 	})
 
 	t.Run("skips empty legacy event logs", func(t *testing.T) {
@@ -516,17 +545,35 @@ func TestFindAPIProxyEventsFile(t *testing.T) {
 		eventsFile := filepath.Join(legacyDir, "events.jsonl")
 		require.NoError(t, os.WriteFile(eventsFile, []byte(`{"event":"timeout_steering"}`+"\n"), 0o644))
 
-		assert.Equal(t, eventsFile, findAPIProxyEventsFile(tmpDir))
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, eventsFile, result.path)
 	})
 
-	t.Run("retains first existing log when none contain steering", func(t *testing.T) {
+	t.Run("finds legacy event logs nested under sandbox", func(t *testing.T) {
+		tmpDir := testutil.TempDir(t, "find-api-proxy-nested-legacy")
+		legacyDir := filepath.Join(tmpDir, "sandbox", "firewall-audit-logs", "api-proxy-logs")
+		require.NoError(t, os.MkdirAll(legacyDir, 0o755))
+		eventsFile := filepath.Join(legacyDir, "events.jsonl")
+		require.NoError(t, os.WriteFile(eventsFile, []byte(`{"event":"token_steering"}`+"\n"), 0o644))
+
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, eventsFile, result.path)
+	})
+
+	t.Run("returns no log when no candidates contain steering", func(t *testing.T) {
 		tmpDir := testutil.TempDir(t, "find-api-proxy-no-steering")
 		logsDir := filepath.Join(tmpDir, "sandbox", "firewall", "logs", "api-proxy-logs")
 		require.NoError(t, os.MkdirAll(logsDir, 0o755))
 		eventsFile := filepath.Join(logsDir, "event-logs.jsonl")
 		require.NoError(t, os.WriteFile(eventsFile, []byte(`{"event":"request"}`+"\n"), 0o644))
 
-		assert.Equal(t, eventsFile, findAPIProxyEventsFile(tmpDir))
+		result, err := findAPIProxyEventsLog(tmpDir)
+		require.NoError(t, err)
+		assert.Nil(t, result)
 	})
 }
 

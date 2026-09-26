@@ -11,12 +11,14 @@
 //   safe_outputs: total item count and per-type breakdown from safe-output-items manifest
 //   experiments: A/B experiment variant assignments for the current run
 //   working_set: cumulative input-token traffic relative to peak invocation input
+//   friction: precomputed cost of wasted work (AIC canonical) with attribution states
 
 const fs = require("fs");
 const path = require("path");
 const { readExperimentAssignments } = require("./experiment_helpers.cjs");
 const { countSteeringEventsByTypeInApiProxyJsonl } = require("./steering_helpers.cjs");
 const { calculateWorkingSetFromJSONL } = require("./working_set_metrics.cjs");
+const { computeFrictionCost } = require("./friction_cost_metrics.cjs");
 
 require("./shim.cjs");
 
@@ -38,6 +40,10 @@ const API_PROXY_EVENT_LOG_PATHS = [
   "/tmp/gh-aw/sandbox/firewall/audit/api-proxy-logs/events.jsonl",
   "/tmp/gh-aw/sandbox/firewall-audit-logs/api-proxy-logs/event-logs.jsonl",
   "/tmp/gh-aw/sandbox/firewall-audit-logs/api-proxy-logs/events.jsonl",
+  "/tmp/gh-aw/firewall-audit-logs/api-proxy-logs/event-logs.jsonl",
+  "/tmp/gh-aw/firewall-audit-logs/api-proxy-logs/events.jsonl",
+  "/tmp/gh-aw/firewall-logs/api-proxy-logs/event-logs.jsonl",
+  "/tmp/gh-aw/firewall-logs/api-proxy-logs/events.jsonl",
 ];
 
 function findFiles(rootDir, shouldIncludeFile, maxDepth = Number.POSITIVE_INFINITY, currentDepth = 0) {
@@ -92,6 +98,47 @@ function parseWorkingSetMetrics(tokenUsagePath = AGENT_TOKEN_USAGE_PATH) {
   } catch (err) {
     throw new Error(`Failed to read working-set token usage from ${tokenUsagePath}: ${String(err)}`, { cause: err });
   }
+}
+
+/**
+ * Read the agent token-usage JSONL used by friction-cost attribution.
+ *
+ * @param {string} [tokenUsagePath]
+ * @returns {{ content: string, available: boolean }}
+ */
+function readTokenUsageContent(tokenUsagePath = AGENT_TOKEN_USAGE_PATH) {
+  if (!fs.existsSync(tokenUsagePath)) {
+    return { content: "", available: false };
+  }
+  try {
+    return { content: fs.readFileSync(tokenUsagePath, "utf-8"), available: true };
+  } catch {
+    return { content: "", available: false };
+  }
+}
+
+/**
+ * Compute the precomputed friction-cost section for the usage activity summary.
+ * Never throws: friction is an additive section and must not fail summary generation.
+ *
+ * @param {{ gateway: any, integrity: any, session: any, firewall: any }} activity
+ * @param {string} [tokenUsagePath]
+ * @returns {Record<string, any>}
+ */
+function buildFrictionSummary(activity, tokenUsagePath = AGENT_TOKEN_USAGE_PATH) {
+  const { content, available } = readTokenUsageContent(tokenUsagePath);
+  const { friction, warnings } = computeFrictionCost({
+    gateway: activity.gateway,
+    integrity: activity.integrity,
+    session: activity.session,
+    firewall: activity.firewall,
+    tokenUsageContent: content,
+    tokenUsageAvailable: available,
+  });
+  for (const warning of warnings) {
+    core.warning(warning);
+  }
+  return friction;
 }
 
 /**
@@ -892,6 +939,20 @@ function main() {
     core.warning(`Working-set rebuild measurement unavailable: ${String(err)}`);
   }
 
+  // Compute precomputed friction cost from every activity section already parsed.
+  // Consumers that only download the usage artifact read this instead of re-deriving
+  // friction from raw logs, so it is written even when no friction was detected.
+  try {
+    summary.friction = buildFrictionSummary({
+      gateway: summary.gateway || null,
+      integrity: summary.integrity || null,
+      session: summary.session || null,
+      firewall: summary.firewall || null,
+    });
+  } catch (err) {
+    core.warning(`Friction-cost measurement unavailable: ${String(err)}`);
+  }
+
   // Write summary to file
   const outputPath = "/tmp/gh-aw/usage/activity/summary.json";
   try {
@@ -917,6 +978,8 @@ module.exports = {
   parseExperimentsData,
   calculateWorkingSetFromJSONL,
   parseWorkingSetMetrics,
+  buildFrictionSummary,
+  readTokenUsageContent,
   AGENT_TOKEN_USAGE_PATH,
   MANIFEST_FILE_PATH,
 };

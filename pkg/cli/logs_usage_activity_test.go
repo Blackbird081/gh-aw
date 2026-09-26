@@ -178,6 +178,14 @@ func TestApplyUsageActivitySteeringSummaryPreservesDetailedAnalysis(t *testing.T
 
 	assert.Equal(t, 2, tokenUsage.TotalSteeringEvents)
 	assert.Equal(t, map[string]int{"token_steering": 2}, tokenUsage.SteeringEventCounts)
+
+	legacyTokenUsage := &TokenUsageSummary{TotalSteeringEvents: 4}
+	applyUsageActivitySteeringSummary(&usageActivitySteering{
+		TotalEvents: 3,
+		EventCounts: map[string]int{"timeout_steering": 3},
+	}, &legacyTokenUsage)
+	assert.Equal(t, 4, legacyTokenUsage.TotalSteeringEvents)
+	assert.Equal(t, map[string]int{"timeout_steering": 3}, legacyTokenUsage.SteeringEventCounts)
 }
 
 func TestApplyUsageActivitySummaryBackfillsIntegrityWithoutGateway(t *testing.T) {
