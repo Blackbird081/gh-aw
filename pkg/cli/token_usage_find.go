@@ -138,7 +138,7 @@ func findLegacyAPIProxyLogFile(runDir, relativePath string) string {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasPrefix(name, "firewall-audit-logs") || strings.HasPrefix(name, "firewall-logs") {
+		if isLegacyAPIProxyLogDir(name) {
 			candidate := filepath.Join(runDir, name, relativePath)
 			if fileutil.FileExists(candidate) {
 				return candidate
@@ -148,18 +148,37 @@ func findLegacyAPIProxyLogFile(runDir, relativePath string) string {
 	return ""
 }
 
+func isLegacyAPIProxyLogDir(name string) bool {
+	return strings.HasPrefix(name, "firewall-audit-logs") || strings.HasPrefix(name, "firewall-logs")
+}
+
 func findAPIProxyEventsFile(runDir string) string {
-	primary := filepath.Join(runDir, "sandbox", "firewall", "logs", proxyEventsJSONLPath)
-	if fileutil.FileExists(primary) {
-		return primary
+	relativePaths := []string{proxyEventLogsJSONLPath, proxyEventsJSONLPath}
+	roots := []string{
+		filepath.Join(runDir, "sandbox", "firewall", "logs"),
+		filepath.Join(runDir, "sandbox", "firewall", "audit"),
 	}
-
-	awfAuditPath := filepath.Join(runDir, "sandbox", "firewall", "audit", proxyEventsJSONLPath)
-	if fileutil.FileExists(awfAuditPath) {
-		return awfAuditPath
+	if entries, err := os.ReadDir(runDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && isLegacyAPIProxyLogDir(entry.Name()) {
+				roots = append(roots, filepath.Join(runDir, entry.Name()))
+			}
+		}
 	}
-
-	return findLegacyAPIProxyLogFile(runDir, proxyEventsJSONLPath)
+	var firstExisting string
+	for _, root := range roots {
+		for _, relativePath := range relativePaths {
+			candidate := filepath.Join(root, relativePath)
+			if firstExisting == "" && fileutil.FileExists(candidate) {
+				firstExisting = candidate
+			}
+			counts, err := parseAPIProxySteeringEventCounts(candidate)
+			if err == nil && len(counts) > 0 {
+				return candidate
+			}
+		}
+	}
+	return firstExisting
 }
 
 func findAgentStdioFile(runDir string) string {
