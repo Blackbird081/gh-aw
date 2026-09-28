@@ -1,0 +1,5 @@
+{"run_id":"29262576813","timestamp":"2026-07-13T15:32:22.078Z","assignments":{"prompt_compression":"verbose"}}
+{"run_id":"29340822216","timestamp":"2026-07-14T14:26:38.167Z","assignments":{"prompt_compression":"caveman"}}
+{"run_id":"29423322660","timestamp":"2026-07-15T14:23:45.889Z","assignments":{"prompt_compression":"verbose"}}
+{"run_id":"29507266118","timestamp":"2026-07-16T14:35:48.453Z","assignments":{"prompt_compression":"caveman"}}
+{"run_id":"36474793578","timestamp":"2026-09-28T19:49:05.205Z","harness_version":"bbcd6fead817404802d120c61e8779dcef3a4b093c1c304e050f84b2779a0ca8:5b599210644f4359be99d592dea4f9fbb25fce5285fa34197681be23ef47475b","assignments":{"prompt_compression":"caveman"}}
