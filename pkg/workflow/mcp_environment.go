@@ -48,6 +48,7 @@ package workflow
 import (
 	"fmt"
 	"maps"
+	"strconv"
 
 	"slices"
 
@@ -68,7 +69,10 @@ func collectMCPEnvironmentVariables(tools map[string]any, mcpTools []string, wor
 	rawGitHubTool, hasGitHubInTools := tools["github"]
 	githubToolEnabledInTools := hasGitHubInTools && rawGitHubTool != false
 	if hasGitHub {
-		toolConfig, _ := rawGitHubTool.(map[string]any)
+		toolConfig, ok := rawGitHubTool.(map[string]any)
+		if !ok {
+			toolConfig = nil
+		}
 
 		// Check if GitHub App is configured for token minting
 		appConfigured := hasGitHubApp(toolConfig)
@@ -151,6 +155,24 @@ func collectMCPEnvironmentVariables(tools map[string]any, mcpTools []string, wor
 			envVars["GH_AW_ASSETS_BRANCH"] = "${{ env.GH_AW_ASSETS_BRANCH }}"
 			envVars["GH_AW_ASSETS_MAX_SIZE_KB"] = "${{ env.GH_AW_ASSETS_MAX_SIZE_KB }}"
 			envVars["GH_AW_ASSETS_ALLOWED_EXTS"] = "${{ env.GH_AW_ASSETS_ALLOWED_EXTS }}"
+		}
+	}
+	if memory := workflowData.RepoMemoryConfig.ledgerEntry(); memory != nil {
+		envVars["GH_AW_MEMORY_DIR"] = constants.TmpRepoMemoryDir + memory.ID
+		if memory.Ledger.Schema != "" {
+			envVars["GH_AW_LEDGER_SCHEMA"] = memory.Ledger.Schema
+		}
+		if memory.Ledger.MaxShards > 0 {
+			envVars["GH_AW_LEDGER_MAX_SHARDS"] = strconv.Itoa(memory.Ledger.MaxShards)
+		}
+		if memory.Ledger.MaxSegmentKB > 0 {
+			envVars["GH_AW_LEDGER_MAX_SEGMENT_KB"] = strconv.Itoa(memory.Ledger.MaxSegmentKB)
+		}
+		if memory.Ledger.MaxRecordKB > 0 {
+			envVars["GH_AW_LEDGER_MAX_RECORD_KB"] = strconv.Itoa(memory.Ledger.MaxRecordKB)
+		}
+		if memory.Ledger.MaxPatchKB > 0 {
+			envVars["GH_AW_LEDGER_MAX_PATCH_KB"] = strconv.Itoa(memory.Ledger.MaxPatchKB)
 		}
 	}
 

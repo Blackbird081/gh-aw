@@ -67,7 +67,10 @@ func (c *Compiler) addHandlerManagerConfigEnvVar(steps *[]string, data *Workflow
 		// 2. For auto-enabled handlers, include even with empty config
 		if handlerConfig != nil {
 			if safeOutputs.BodyFooter != "" {
-				handlerBodyFooter, _ := handlerConfig["body_footer"].(string)
+				handlerBodyFooter, isString := handlerConfig["body_footer"].(string)
+				if !isString {
+					handlerBodyFooter = ""
+				}
 				handlerConfig["body_footer"] = appendBodyFooters(handlerBodyFooter, safeOutputs.BodyFooter)
 			}
 			injectCurrentCheckoutPatchWorkspacePath(handlerName, handlerConfig, data)
@@ -98,6 +101,9 @@ func (c *Compiler) addHandlerManagerConfigEnvVar(steps *[]string, data *Workflow
 	}
 	if handlerConfig := buildCommentMemoryHandlerConfig(data.CommentMemoryConfig, safeOutputs.Footer, safeOutputs.BodyFooter); handlerConfig != nil {
 		config[commentMemoryHandlerKey] = handlerConfig
+	}
+	if handlerConfig := buildLedgerMutationHandlerConfig(data.RepoMemoryConfig); handlerConfig != nil {
+		config[ledgerMutationHandlerKey] = handlerConfig
 	}
 
 	// Include top-level mentions configuration so the handler manager can pass it to

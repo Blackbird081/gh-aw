@@ -112,3 +112,46 @@ Write the current advisory IDs to `/tmp/gh-aw/repo-memory/default/vuln-baseline.
 - **`max:` flood guard** — caps issues opened per run; use `max: 5` for nightly scans, `max: 1` for secret alerts, `max: 10` for weekly audits
 - **Engine restriction** — `repo-memory` requires Claude or a custom engine; it is **not available** for the Copilot engine
 - **Baseline schema** — store only stable identifiers (advisory ID strings), not mutable fields like severity, to avoid false "new" alerts when metadata changes
+
+## Append-only Event History (repo-memory ledger; experimental)
+
+Use the repo-memory ledger when a workflow needs a durable event log rather than
+a replaceable baseline: for example, a low-volume audit that appends one
+structured result per run and queries prior results by a stable event key.
+Configure it alongside repo-memory:
+
+```yaml
+tools:
+  repo-memory:
+    branch-name: memory/audit-history
+    ledger:
+      compaction:
+        min-segments: 32
+        max-segments: 32
+```
+
+At the start of a run, use `ledger_query` or `ledger_get` to inspect relevant
+records; after the result is complete, use `ledger_append` to add an immutable
+record with an explicit timestamp and stable domain key. Use
+`ledger_status` to inspect malformed or incomplete records. Never modify ledger
+shards directly. When concurrent runs can report the same event, deduplicate
+and resolve conflicts using deterministic application rules; the ledger
+converges after branch merges but does not provide transactions.
+
+The ledger is experimental and bounded to 1024 shard files by default (set
+`ledger.max-shards` to choose a lower limit), 32 KiB per record and 100 KiB per
+shard by default, and 500 records per query. A new writer shard is created by each workflow
+invocation. When configured, `ledger.compaction` defaults to compacting 32 stable closed shards
+once that threshold is reached; the trusted runtime selects, validates,
+deduplicates, writes, verifies, and retires segments. Custom JavaScript
+compactor scripts are disabled because Node's in-process VM is not a security
+boundary. Ledger workflows require AWF Cloud Hypervisor, and the compiler keeps
+ledger paths out of agent write permissions; append through MCP only.
+The default per-run append limit is 10 KiB. Configure `max-segment-kb`,
+`max-record-kb`, and `max-patch-kb` when daily volume needs tighter bounds;
+compilation warns if those limits exceed the repo-memory file or patch limits.
+Compaction, normalization, and save details appear in the persistence step
+summary. Record SHA-256 values are unkeyed checksums rather than authentication;
+the ledger is eventually convergent but neither transactional nor exactly-once.
+Use application idempotency keys, deduplicate, and resolve concurrent conflicts
+deterministically. Avoid it for replaceable snapshots or expiring baselines.

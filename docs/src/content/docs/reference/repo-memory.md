@@ -45,6 +45,52 @@ tools:
 
 `branch-prefix` changes the default `memory` prefix and must be 4-32 alphanumeric, hyphen, or underscore characters; it cannot be `copilot`. `allowed-extensions` limits which file types can be stored, `format-json: true` pretty-prints `.json` files before commit, `validation.script` runs a custom JavaScript domain validator before persistence, and `max-patch-size` caps the total diff size for one push (default 10KB, max 1MB) to prevent oversized updates.
 
+## Structured Ledger
+
+:::caution[Experimental]
+The repo-memory ledger is experimental and its configuration or behavior may change. Enabling it emits a compile-time warning.
+:::
+
+Enable an optional, domain-neutral ledger within repo memory:
+
+```aw wrap
+---
+tools:
+  repo-memory:
+    ledger:
+---
+```
+
+The ledger tools append immutable structured records and retrieve or query them without exposing storage paths or SQL to the agent. Queries return records in stable SHA order and support bounded cursor pagination: pass the previous response's `nextCursor` as `after` and continue while `hasMore` is true. A cursor is exclusive and applies to the same query filters; concurrent writes may change the matching set between pages, so pagination is not a snapshot. Repo memory persists the append-only records in Git; an ephemeral local index is reconstructed from those records on each run. Independent concurrent writers can append records, and their histories converge when repo memory merges them. A missing parent is reported as incomplete rather than discarding its record; malformed records are isolated and reported in ledger status.
+
+To validate application records as well as the built-in envelope, specify a repository-relative local schema using the supported simplified JSON Schema vocabulary:
+
+```yaml
+tools:
+  repo-memory:
+    ledger:
+      schema: .github/schemas/ledger.schema.json
+      max-shards: 256       # default 1024
+      max-segment-kb: 100   # default 100 KiB (repo-memory max-file-size default)
+      max-record-kb: 32     # default 32 KiB
+      max-patch-kb: 10      # default 10 KiB (repo-memory max-patch-size default)
+      compaction:
+        min-segments: 32     # default 32 stable closed segments
+        max-segments: 32     # default 32 segments compacted per run
+```
+
+The ledger is an eventually convergent append-only store, not a distributed transactional database. Applications must define their own deterministic conflict resolution for concurrent records.
+
+Ledger segment and record limits should stay within repo-memory's `max-file-size` limit, and the per-run ledger patch limit should stay within `max-patch-size`. If a ledger limit exceeds its corresponding repo-memory limit, compilation emits a warning because persistence may reject the ledger files or patch.
+
+Compaction is declarative: when the number of stable closed shards reaches `min-segments`, the trusted persistence job deterministically selects up to `max-segments` shards in lexical segment-ID order. The runtime deduplicates records by SHA, validates and sorts them, writes an immutable replacement, and retires sources only after verifying that the replacement contains each source record. It excludes the current run's shard. Compaction failures are fail-open, and selection, record, replacement, retirement, normalization, and save details appear in the persistence step summary. Custom JavaScript compactor scripts are disabled because an in-process Node VM is not a security boundary.
+
+Ledger workflows require AWF's Cloud Hypervisor runtime. The compiler withholds repo-memory ledger paths from `filesystem.allowWrite` and rejects allow-write paths that overlap the ledger directory; agents append only through ledger MCP tools. The persistence job also ignores agent artifacts that overwrite existing trusted shards or supply coverage declarations. Record SHA-256 values detect accidental corruption, not malicious forgery, so do not treat the ledger as tamper-proof if its write boundary is bypassed. Cloud Hypervisor is a preview runtime and is limited to supported GitHub-hosted Linux x86_64 runners.
+
+After each durable agent append, the server attempts to emit a redacted `ledger_mutation` audit entry (operation, record ID and type, timestamp, parent hashes, record SHA, payload SHA) to a dedicated ledger transaction log. An audit-write failure is reported separately and does not turn a committed append into a failed one; audit logs may therefore have gaps. A trusted post-agent step revalidates, redacts, deduplicates, and bounds those entries before merging them into the safe-output file, where threat detection can review them. The matching safe-output handler is log-only: it reports the audit metadata and performs no side effects, because the append is already durable and the transaction log alone does not prove which writer produced an entry.
+
+Concurrent/retried appends are at-least-once, not exactly-once: record UUIDs are not application idempotency keys, and the ledger does not provide transactions or uniqueness constraints. Include stable application keys and resolve duplicates/conflicts deterministically. SHA-256 is an unkeyed integrity checksum, not authentication.
+
 **File Glob Matching Rules**:
 
 - Patterns are matched against the **relative path** within the artifact directory — do **not** include the branch name.

@@ -40,6 +40,8 @@ func collectMCPServersForManifest(data *WorkflowData) []GHAWManifestMCPServer {
 			add(constants.AgenticWorkflowsMCPServerID.String(), []string{"*"})
 		case "safe-outputs":
 			add(constants.SafeOutputsMCPServerID.String(), collectSafeOutputsManifestTools(data.SafeOutputs))
+		case "ledger":
+			add("ledger", []string{"ledger_append", "ledger_get", "ledger_query", "ledger_status"})
 		case "mcp-scripts":
 			add(constants.MCPScriptsMCPServerID.String(), sliceutil.SortedKeys(data.MCPScripts.Tools))
 		case enclaveMCPServerName:
@@ -72,7 +74,10 @@ func collectGitHubMCPManifestTools(toolValue any) []string {
 		return githubConfig.Allowed.ToStringSlice()
 	}
 
-	githubTool, _ := toolValue.(map[string]any)
+	githubTool, ok := toolValue.(map[string]any)
+	if !ok {
+		githubTool = nil
+	}
 	defaultTools := constants.DefaultGitHubToolsLocal
 	if getGitHubType(githubTool) == GitHubMCPModeRemote {
 		defaultTools = constants.DefaultGitHubToolsRemote

@@ -487,6 +487,10 @@ func (c *Compiler) emitGeneralToolWarnings(workflowData *WorkflowData, markdownP
 	}
 
 	c.emitExperimentalFeatureWarnings(workflowData)
+	for _, warning := range repoMemoryLedgerLimitWarnings(workflowData.RepoMemoryConfig) {
+		fmt.Fprintln(os.Stderr, formatCompilerMessage(markdownPath, "warning", warning))
+		c.IncrementWarningCount()
+	}
 	c.emitSamplesCoverageWarnings(workflowData, markdownPath)
 	if len(workflowData.Command) > 0 && len(workflowData.Bots) > 0 {
 		fmt.Fprintln(os.Stderr, formatCompilerMessage(markdownPath, "warning",
@@ -550,6 +554,7 @@ func (c *Compiler) emitExperimentalFeatureWarningsTo(workflowData *WorkflowData,
 		{enabled: len(workflowData.LSP) > 0, message: "Using experimental feature: lsp"},
 		{enabled: len(workflowData.Plugins) > 0, message: "Using experimental feature: plugins"},
 		{enabled: workflowData.DriveMemoryConfig != nil && len(workflowData.DriveMemoryConfig.Drives) > 0, message: "Using experimental feature: drive-memory"},
+		{enabled: workflowData.RepoMemoryConfig != nil && slices.ContainsFunc(workflowData.RepoMemoryConfig.Memories, func(memory RepoMemoryEntry) bool { return memory.Ledger != nil }), message: "Using experimental feature: repo-memory ledger"},
 		{enabled: hasContinualExperiment(workflowData.ExperimentConfigs), message: "Using experimental feature: continual experiments"},
 		{enabled: workflowData.SafeOutputs != nil && workflowData.SafeOutputs.Steer, message: "Using experimental feature: safe-outputs steer"},
 	}

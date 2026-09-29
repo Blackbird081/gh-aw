@@ -11,8 +11,10 @@ package workflow
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/github/gh-aw/pkg/constants"
@@ -60,6 +62,23 @@ type RepoMemoryEntry struct {
 	Wiki              bool                    `yaml:"wiki,omitempty"`               // use the GitHub Wiki git repository instead of the regular repo
 	FormatJSON        bool                    `yaml:"format-json,omitempty"`        // pretty-print all .json files before committing (default: false)
 	Validation        *MemoryValidationConfig `yaml:"validation,omitempty"`         // optional custom JavaScript validation hook
+	Ledger            *RepoMemoryLedgerConfig `yaml:"ledger,omitempty"`             // optional ledger projection
+}
+
+// RepoMemoryLedgerConfig enables the ledger projection for this memory.
+type RepoMemoryLedgerConfig struct {
+	Schema       string                            `yaml:"schema,omitempty"`
+	MaxShards    int                               `yaml:"max-shards,omitempty"`
+	MaxSegmentKB int                               `yaml:"max-segment-kb,omitempty"`
+	MaxRecordKB  int                               `yaml:"max-record-kb,omitempty"`
+	MaxPatchKB   int                               `yaml:"max-patch-kb,omitempty"`
+	Compaction   *RepoMemoryLedgerCompactionConfig `yaml:"compaction,omitempty"`
+}
+
+// RepoMemoryLedgerCompactionConfig bounds deterministic ledger compaction.
+type RepoMemoryLedgerCompactionConfig struct {
+	MinSegments int `yaml:"min-segments,omitempty" json:"minSegments"`
+	MaxSegments int `yaml:"max-segments,omitempty" json:"maxSegments"`
 }
 
 // RepoMemoryToolConfig represents the configuration for repo-memory in tools
@@ -106,9 +125,17 @@ func (c *Compiler) extractRepoMemoryConfig(toolsConfig *ToolsConfig, workflowID 
 		if err != nil {
 			return nil, err
 		}
+		ledgerEnabled := false
+		for _, memory := range memories {
+			ledgerEnabled = ledgerEnabled || memory.Ledger != nil
+		}
+		if ledgerEnabled && len(memories) != 1 {
+			return nil, errors.New("tools.repo-memory.ledger requires exactly one repo-memory entry")
+		}
 		config.Memories = memories
 		return config, nil
 	}
+
 	if configMap, ok := repoMemoryValue.(map[string]any); ok {
 		if err := applyRepoMemoryBranchPrefix(configMap, config); err != nil {
 			return nil, err
@@ -121,6 +148,19 @@ func (c *Compiler) extractRepoMemoryConfig(toolsConfig *ToolsConfig, workflowID 
 		return config, nil
 	}
 	return nil, nil
+}
+
+func (config *RepoMemoryConfig) ledgerEntry() *RepoMemoryEntry {
+	if config == nil {
+		return nil
+	}
+	for _, memory := range config.Memories {
+		if memory.Ledger != nil {
+			entry := memory
+			return &entry
+		}
+	}
+	return nil
 }
 
 func newDefaultRepoMemoryEntry(workflowID, branchPrefix string) RepoMemoryEntry {
@@ -207,6 +247,28 @@ func parseRepoMemoryEntry(memoryMap map[string]any, workflowID, branchPrefix str
 	}
 	if err := applyRepoMemoryOptionalFields(&entry, memoryMap); err != nil {
 		return RepoMemoryEntry{}, err
+	}
+	if ledger, exists := memoryMap["ledger"]; exists {
+		config, err := parseRepoMemoryLedgerConfig(ledger)
+		if err != nil {
+			return RepoMemoryEntry{}, err
+		}
+		if !repoMemoryLedgerIDPattern.MatchString(entry.ID) {
+			return RepoMemoryEntry{}, errors.New("tools.repo-memory.ledger requires a memory id with only letters, numbers, hyphens or underscores")
+		}
+		hasJSONLExtension := false
+		for _, ext := range entry.AllowedExtensions {
+			hasJSONLExtension = hasJSONLExtension || strings.EqualFold(ext, ".jsonl")
+		}
+		if len(entry.AllowedExtensions) > 0 && !hasJSONLExtension {
+			return RepoMemoryEntry{}, errors.New("tools.repo-memory.ledger requires .jsonl in allowed-extensions to persist ledger records")
+		}
+		if len(entry.FileGlob) > 0 {
+			if !slices.Contains(entry.FileGlob, "ledger/shards/*.jsonl") {
+				entry.FileGlob = append(entry.FileGlob, "ledger/shards/*.jsonl")
+			}
+		}
+		entry.Ledger = config
 	}
 	finalizeRepoMemoryEntry(&entry, explicitBranchName)
 	return entry, nil
@@ -547,6 +609,7 @@ func generateRepoMemorySteps(builder *strings.Builder, data *WorkflowData) {
 		fmt.Fprintf(builder, "          MEMORY_DIR: %s\n", memoryDir)
 		fmt.Fprintf(builder, "          CREATE_ORPHAN: %t\n", memory.CreateOrphan)
 		builder.WriteString("        run: bash \"${RUNNER_TEMP}/gh-aw/actions/clone_repo_memory_branch.sh\"\n")
+
 	}
 }
 
@@ -703,6 +766,7 @@ func (c *Compiler) buildSinglePushRepoMemoryStep(data *WorkflowData, memory Repo
 		fmt.Fprintf(&step, "          VALIDATION_SCRIPT_B64: %s\n", memoryValidationScriptBase64(memory.Validation))
 		fmt.Fprintf(&step, "          VALIDATION_TIMEOUT_SECONDS: %d\n", memoryValidationTimeoutSeconds(memory.Validation))
 	}
+	appendRepoMemoryLedgerCompactionEnv(&step, memory.Ledger)
 	step.WriteString("        with:\n")
 	step.WriteString("          script: |\n")
 	step.WriteString("            const { setupGlobals } = require('" + SetupActionDestination + "/setup_globals.cjs');\n")
@@ -716,6 +780,23 @@ func (c *Compiler) buildSinglePushRepoMemoryStep(data *WorkflowData, memory Repo
 		}
 	}
 	return step.String()
+}
+
+func appendRepoMemoryLedgerCompactionEnv(step *strings.Builder, ledger *RepoMemoryLedgerConfig) {
+	if compaction := ledgerCompactionOptionsBase64(ledger); compaction != "" {
+		fmt.Fprintf(step, "          LEDGER_COMPACTION_OPTIONS_B64: %s\n", compaction)
+	}
+	if ledger != nil {
+		if ledger.MaxSegmentKB > 0 {
+			fmt.Fprintf(step, "          GH_AW_LEDGER_MAX_SEGMENT_KB: %d\n", ledger.MaxSegmentKB)
+		}
+		if ledger.MaxRecordKB > 0 {
+			fmt.Fprintf(step, "          GH_AW_LEDGER_MAX_RECORD_KB: %d\n", ledger.MaxRecordKB)
+		}
+		if ledger.MaxPatchKB > 0 {
+			fmt.Fprintf(step, "          GH_AW_LEDGER_MAX_PATCH_KB: %d\n", ledger.MaxPatchKB)
+		}
+	}
 }
 
 func buildRepoMemoryGitHubEnv(data *WorkflowData, hasConsolidatedSafeOutputsJob bool) string {
