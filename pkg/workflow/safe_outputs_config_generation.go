@@ -29,7 +29,7 @@ import (
 // they stay in sync with GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG.
 func generateSafeOutputsConfig(data *WorkflowData) (string, error) {
 	if data.SafeOutputs == nil {
-		if data.CommentMemoryConfig == nil {
+		if data.CommentMemoryConfig == nil && (data.LedgerConfig == nil || !data.LedgerConfig.Enabled()) {
 			safeOutputsConfigLog.Print("No safe outputs configuration found, returning empty config")
 			return "", nil
 		}
@@ -53,6 +53,19 @@ func generateSafeOutputsConfig(data *WorkflowData) (string, error) {
 	if ledgerConfig := buildLedgerMutationHandlerConfig(data.RepoMemoryConfig); ledgerConfig != nil {
 		safeOutputsConfig[ledgerMutationHandlerKey] = ledgerConfig
 		safeOutputsConfigLog.Print("Added ledger_mutation config so ledger audit entries are ingested")
+	}
+	if data.LedgerConfig != nil && data.LedgerConfig.Enabled() {
+		ledgerConfigs := make([]map[string]any, 0, len(data.LedgerConfig.Ledgers))
+		for _, ledger := range data.LedgerConfig.Ledgers {
+			ledgerConfigs = append(ledgerConfigs, map[string]any{
+				"name":           ledger.Name,
+				"schema":         ledger.Schema,
+				"max_record_kb":  ledger.MaxRecordKB,
+				"max_segment_kb": ledger.MaxSegmentKB,
+				"max_patch_kb":   ledger.MaxPatchKB,
+			})
+		}
+		safeOutputsConfig["ledger_append"] = map[string]any{"max": 100, "ledgers": ledgerConfigs}
 	}
 
 	if len(safeOutputsConfig) == 0 {
